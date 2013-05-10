@@ -1,3 +1,15 @@
 
 PSPEC - takes a tracked tile and makes a power spectrum. Probably most useful for ring-diagram analysis.
 
+If you happen to want to produce power spectra that are ready to be fit with either rdfitf or the multi-ridge code, then this is very useful. At some point I'd like to make some of the steps optional.
+
+Steps:
+1 - apodize
+2 - fourier transform
+3 - take power
+4 - cart to polar
+5 - subsample in theta
+
+Usage:
+./pspec {input fits file} {output fits file}
+
