@@ -30,6 +30,12 @@ PROGRAM PSPEC
 	DOUBLE COMPLEX, DIMENSION(:), ALLOCATABLE :: linein, lineout, subin, subout
 	DOUBLE PRECISION :: norm
 
+	! for fourier filter
+	LOGICAL :: dofilter = .TRUE.
+	REAL :: thetaavg
+	REAL, DIMENSION(:,:), ALLOCATABLE :: nrmlz, filt_avg
+	INTEGER :: inumax, inumin
+
 	pi = ACOS(-1D0)
 
 	! Check number of command line arguments
@@ -77,6 +83,7 @@ PROGRAM PSPEC
 	ENDDO
 	DEALLOCATE(buff)
 	PRINT*, " Done."
+	dnu = 1e6/(45.*naxes(3))
 
 !	PRINT*, inarr(100,100,1), 151.758
 
@@ -88,7 +95,6 @@ PROGRAM PSPEC
 			(float(naxes(1))*float(naxes(2)))
 	ENDDO
 	!$OMP END PARALLEL DO
-	PRINT*, " Done."
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! APODIZE
 
@@ -265,6 +271,13 @@ PROGRAM PSPEC
 	ALLOCATE(lineout(ntheta))
 	ALLOCATE(subin(ntheta))
 	ALLOCATE(subout(ntheta))
+	ALLOCATE(nrmlz(nk,naxes(3)/2)) ! filter
+	ALLOCATE(filt_avg(ntheta_sub, nk)) ! filter
+	filt_avg(:,:) = 0.0
+	inumax = INT(5500./dnu)
+	inumin = INT(1500./dnu)
+	print*, inumax, inumin
+
 	DO ii=1,naxes(3)/2
 		DO ij=1,nk
 			! copy spectrum -> linein
@@ -287,7 +300,13 @@ PROGRAM PSPEC
 			DO ik=1,ntheta_sub
 				power_sub(ik,ij,ii) = REAL(subout((ik-1)*reducefactor+1))
 			ENDDO
-			!power_sub(:,ij,ii) = power_cart(:,ij,ii)
+			! also compute some filtering things for later
+			thetaavg = SUM(power_sub(:,ij,ii))
+			nrmlz(ij,ii) = thetaavg / FLOAT(ntheta_sub)
+			thetaavg = thetaavg * (inumax-inumin)/FLOAT(ntheta_sub)
+			IF ((ii .GE. inumin) .AND. (ii .LE. inumax)) THEN
+				filt_avg(:,ij) = filt_avg(:,ij) + power_sub(:,ij,ii)/thetaavg
+			ENDIF
 		ENDDO
 	ENDDO
 	DEALLOCATE(linein)
@@ -297,7 +316,47 @@ PROGRAM PSPEC
 	DEALLOCATE(power_cart)
 	PRINT*, " Done."
 
+	PRINT*, filt_avg(1,1)
 !	PRINT*, power_sub(1, 20, 10), 4.2708e9
+
+	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! FOURIER FILTER
+
+	PRINT*, "Fourier Filtering.."
+	ALLOCATE(linein(ntheta_sub))
+	ALLOCATE(lineout(ntheta_sub))
+	ALLOCATE(subin(ntheta_sub))
+	ALLOCATE(subout(ntheta_sub))
+	DO ij=1,nk
+		linein(:) = CMPLX(filt_avg(:,ij),0.0)
+		! ft linein -> lineout
+		CALL DFFTW_PLAN_DFT_1D(plan,ntheta_sub,linein,lineout,FFTW_FORWARD,FFTW_ESTIMATE)
+		CALL DFFTW_EXECUTE_DFT(plan, linein, lineout)
+		CALL DFFTW_DESTROY_PLAN(plan)
+		subin = lineout
+		subin(2) = CMPLX(0.0,0.0)
+		subin(ntheta_sub) = CMPLX(0.0,0.0)
+		! normalize?
+		! ft subin -> subout
+		CALL DFFTW_PLAN_DFT_1D(plan,ntheta_sub,subin,subout,FFTW_BACKWARD,FFTW_ESTIMATE)
+		CALL DFFTW_EXECUTE_DFT(plan, subin, subout)
+		CALL DFFTW_DESTROY_PLAN(plan)
+		filt_avg(:,ij) = subout
+	ENDDO
+	DEALLOCATE(linein)
+	DEALLOCATE(lineout)
+	DEALLOCATE(subin)
+	DEALLOCATE(subout)
+
+	IF (dofilter) THEN
+		DO ii=1,naxes(3)/2
+			DO ij=1,nk
+				thetaavg = SUM(power_sub(:,ij,ii)/filt_avg(:,ij)) / ntheta
+				power_sub(:,ij,ii) = power_sub(:,ij,ii) * nrmlz(ij,ii) / &
+					(filt_avg(:,ij)*thetaavg)
+			ENDDO
+		ENDDO
+	ENDIF
+	PRINT*, " Done."
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! OUTPUT
 
