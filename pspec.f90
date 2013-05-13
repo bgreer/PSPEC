@@ -6,11 +6,12 @@
 
 
 PROGRAM PSPEC
+	USE ParseInput
 	USE omp_lib
 	IMPLICIT NONE
 	INCLUDE "fftw3.f"
 
-	CHARACTER(LEN=200) :: infile, outfile, record
+	CHARACTER(LEN=200) :: record
 	INTEGER :: N, ii, ij, ik, il, blocksize, stat, nfnd
 	INTEGER :: offset, nv, g, bitpix, id, nmore, nkeys
 	LOGICAL :: anyf, simple, extend
@@ -31,7 +32,6 @@ PROGRAM PSPEC
 	DOUBLE PRECISION :: norm
 
 	! for fourier filter
-	LOGICAL :: dofilter = .TRUE.
 	REAL :: thetaavg
 	REAL, DIMENSION(:,:), ALLOCATABLE :: nrmlz, filt_avg
 	INTEGER :: inumax, inumin
@@ -44,14 +44,14 @@ PROGRAM PSPEC
 		STOP
 	ENDIF
 
-	! Read command line arguments
-	CALL getarg(1,infile)
-	CALL getarg(2,outfile)
+	CALL SetDefaults()
+	! Sort out command line arguments
+	CALL ReadCommandLine()
 
 	!$OMP PARALLEL
 	id = OMP_GET_THREAD_NUM()
-	IF (id .eq. 0) THEN
-		print*, "Number of threads: ", OMP_GET_NUM_THREADS()
+	IF (id .eq. 0 .AND. verbose >= 1) THEN
+		PRINT*, "Number of threads: ", OMP_GET_NUM_THREADS()
 	ENDIF
 	!$OMP END PARALLEL
 
@@ -60,14 +60,14 @@ PROGRAM PSPEC
 	CALL FTOPEN(30,infile,0,blocksize,stat)
 	! Get dimensions of data cube
 	CALL FTGKNJ(30,'NAXIS',1,3,naxes,nfnd,stat)
-	PRINT*, "Input data cube has dimensions: ",naxes
+	IF (verbose >= 1) PRINT*, "Input data cube has dimensions: ",naxes
 	npix = naxes(1)
 
 	ALLOCATE(inarr(naxes(1),naxes(2),naxes(3)))
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! READ INPUT
 
 	! Read input FITS into inarr
-	PRINT*, "Reading input file into memory.."
+	IF (verbose >= 2) PRINT*, "Reading input file into memory.."
 	ALLOCATE(buff(naxes(1)))
 	nv = -999
 	g = 1
@@ -82,10 +82,9 @@ PROGRAM PSPEC
 		ENDDO
 	ENDDO
 	DEALLOCATE(buff)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 	dnu = 1e6/(45.*naxes(3))
 
-!	PRINT*, inarr(100,100,1), 151.758
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! BACKSUBTR
 
@@ -99,7 +98,7 @@ PROGRAM PSPEC
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! APODIZE
 
 	! Create Apodization Masks
-	PRINT*, "Apodizing.."
+	IF (verbose >= 2) PRINT*, "Apodizing.."
 	ALLOCATE(mask2d(naxes(1),naxes(2)))
 	ALLOCATE(mask1d(naxes(3)))
 	mask1d = 1.0
@@ -132,8 +131,7 @@ PROGRAM PSPEC
 		inarr(:,:,ii) = inarr(:,:,ii)*mask1d(ii)*mask2d
 	ENDDO
 	!$OMP END PARALLEL DO
-	PRINT*, " Done."
-!	PRINT*, inarr(100,100,10), -3.184
+	IF (verbose >= 2) PRINT*, " Done."
 
 	! Free masks
 	DEALLOCATE(mask2d)
@@ -142,7 +140,7 @@ PROGRAM PSPEC
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! FOURIER TRANSFORM
 
 	! transform because i'm lazy
-	PRINT*, "Transforming array.."
+	IF (verbose >= 2) PRINT*, "Transforming array.."
 	ALLOCATE(inarr2(naxes(3), naxes(2), naxes(1)))
 	! copy inarr to inarr2
 	!$OMP PARALLEL DO PRIVATE(ii,ij)
@@ -155,21 +153,19 @@ PROGRAM PSPEC
 
 	DEALLOCATE(inarr)
 	ALLOCATE(outarr2(naxes(3)/2+1, naxes(2), naxes(1)))
-	PRINT*, " Done."
-!	PRINT*, inarr2(10,100,100), -3.184
+	IF (verbose >= 2) PRINT*, " Done."
 
 	plan = 0
 	! Set up FFT of inarr->outarr
 	CALL DFFTW_PLAN_DFT_R2C_3D(plan,naxes(3),naxes(2),naxes(1),inarr2,outarr2,FFTW_ESTIMATE)
-	PRINT*, "Performing Fourier Transform.."
+	IF (verbose >= 2) PRINT*, "Performing Fourier Transform.."
 	CALL DFFTW_EXECUTE(plan)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 	CALL DFFTW_DESTROY_PLAN(plan)
 
 	DEALLOCATE(inarr2)
-!	PRINT*, outarr2(10,100,100), 13499424.5, 2400790.3
 
-	PRINT*, "Transforming array again.."
+	IF (verbose >= 2) PRINT*, "Transforming array again.."
 	! copy outarr2 to outarr
 
 	ALLOCATE(outarr(naxes(1),naxes(2),naxes(3)/2+1))
@@ -181,7 +177,7 @@ PROGRAM PSPEC
 	ENDDO
 	!$OMP END PARALLEL DO
 	DEALLOCATE(outarr2)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 
 !	PRINT*, outarr(100,100,10), 13499424.5, 2400790.3
 
@@ -190,7 +186,7 @@ PROGRAM PSPEC
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! POWER SPECTRUM
 
 	! Process result
-	PRINT*, "Computing Power Spectrum.."
+	IF (verbose >= 2) PRINT*, "Computing Power Spectrum.."
 	!$OMP PARALLEL DO PRIVATE(ii)
 	DO ii=1,naxes(3)/2+1
 		power(:,:,ii) = 0.5*LOG(REAL(outarr(:,:,ii))**2. + &
@@ -207,24 +203,23 @@ PROGRAM PSPEC
 !				AIMAG(outarr(naxes(1)/2-ij+2,:,naxes(3)-ii+1))**2.)
 !		ENDDO
 !	ENDDO
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 	DEALLOCATE(outarr)
 
-!	PRINT*, power(100,100,10), 16.43373
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! CART TO POLAR
 
 	! Shift pixels
-	PRINT*, "Shifting Pixels.."
+	IF (verbose >= 2) PRINT*, "Shifting Pixels.."
 	ALLOCATE(power_shift(naxes(1),naxes(2),naxes(3)/2+1))
 	power_shift(naxes(1)/2+1:naxes(1),:,:) = power(1:naxes(1)/2,:,:)
 	power_shift(1:naxes(1)/2,:,:) = power(naxes(1)/2+1:naxes(1),:,:)
 	power(:,naxes(2)/2+1:naxes(2),:) = power_shift(:,1:naxes(2)/2,:)
 	power(:,1:naxes(2)/2,:) = power_shift(:,naxes(2)/2+1:naxes(2),:)
 	DEALLOCATE(power_shift)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 
-	PRINT*, "Converting to Polar Coordinates.."
+	IF (verbose >= 2) PRINT*, "Converting to Polar Coordinates.."
 	nk = naxes(1)/2
 	ntheta = 200
 	SELECT CASE (naxes(1))
@@ -239,6 +234,7 @@ PROGRAM PSPEC
 		CASE (48) ! 2 degree
 			ntheta = 32
 	END SELECT
+	IF (verbose >= 1) PRINT*, "Using ", ntheta, " pixels in theta."
 	ALLOCATE(power_cart(ntheta,nk,naxes(3)/2))
 	x0 = FLOAT(naxes(1)/2)+1.
 	y0 = FLOAT(naxes(2)/2)+1.
@@ -256,16 +252,14 @@ PROGRAM PSPEC
 	ENDDO
 	!$OMP END PARALLEL DO
 	DEALLOCATE(power)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 
-!	PRINT*, power_cart(1, 20, 10), 1.2367e7
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! FOURIER SUBSAMPLE
 
-!	ntheta_sub = ntheta
 	ntheta_sub = INT(MAX(ntheta/8,16))
 	reducefactor = INT(ntheta/ntheta_sub)
-	PRINT*, "Subsampling from ",ntheta," to ",ntheta_sub
+	IF (verbose >= 1) PRINT*, "Subsampling from ",ntheta," to ",ntheta_sub
 	ALLOCATE(power_sub(ntheta_sub,nk,naxes(3)/2))
 	ALLOCATE(linein(ntheta))
 	ALLOCATE(lineout(ntheta))
@@ -276,7 +270,6 @@ PROGRAM PSPEC
 	filt_avg(:,:) = 0.0
 	inumax = INT(5500./dnu)
 	inumin = INT(1500./dnu)
-	print*, inumax, inumin
 
 	DO ii=1,naxes(3)/2
 		DO ij=1,nk
@@ -314,14 +307,12 @@ PROGRAM PSPEC
 	DEALLOCATE(subin)
 	DEALLOCATE(subout)
 	DEALLOCATE(power_cart)
-	PRINT*, " Done."
-
-	PRINT*, filt_avg(1,1)
-!	PRINT*, power_sub(1, 20, 10), 4.2708e9
+	IF (verbose >= 2) PRINT*, " Done."
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! FOURIER FILTER
 
-	PRINT*, "Fourier Filtering.."
+	IF (dofilter) THEN
+	IF (verbose >= 2) PRINT*, "Fourier Filtering.."
 	ALLOCATE(linein(ntheta_sub))
 	ALLOCATE(lineout(ntheta_sub))
 	ALLOCATE(subin(ntheta_sub))
@@ -347,21 +338,20 @@ PROGRAM PSPEC
 	DEALLOCATE(subin)
 	DEALLOCATE(subout)
 
-	IF (dofilter) THEN
-		DO ii=1,naxes(3)/2
-			DO ij=1,nk
-				thetaavg = SUM(power_sub(:,ij,ii)/filt_avg(:,ij)) / ntheta
-				power_sub(:,ij,ii) = power_sub(:,ij,ii) * nrmlz(ij,ii) / &
-					(filt_avg(:,ij)*thetaavg)
-			ENDDO
+	DO ii=1,naxes(3)/2
+		DO ij=1,nk
+			thetaavg = SUM(power_sub(:,ij,ii)/filt_avg(:,ij)) / ntheta
+			power_sub(:,ij,ii) = power_sub(:,ij,ii) * nrmlz(ij,ii) / &
+				(filt_avg(:,ij)*thetaavg)
 		ENDDO
+	ENDDO
+	IF (verbose >= 2) PRINT*, " Done."
 	ENDIF
-	PRINT*, " Done."
 
 	!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! OUTPUT
 
 	! Output to FITS file
-	PRINT*, "Writing Results to File.."
+	IF (verbose >= 2) PRINT*, "Writing Results to File.."
 	dnu = 1e6/(45.*naxes(3))
 	CALL FTINIT(20,outfile,blocksize,stat)
 	simple=.TRUE.
@@ -381,9 +371,11 @@ PROGRAM PSPEC
 	ENDDO
 	CALL FTGKYE(30,"MAPSCALE",mapscale,record,stat)
 	dk = 360./(mapscale*npix*696.0)
-	PRINT*, " Adding header keys:"
-	PRINT*, "   DELTA_NU=",dnu
-	PRINT*, "   DELTA_K=",dk
+	IF (verbose >= 1) THEN
+		PRINT*, " Adding header keys:"
+		PRINT*, "   DELTA_NU=",dnu
+		PRINT*, "   DELTA_K=",dk
+	ENDIF
 	CALL FTPKYE(20,"DELTA_NU",dnu,6,"",stat)
 	CALL FTPKYE(20,"DELTA_K",dk,6,"",stat)
 	CALL FTCLOS(30,stat)
@@ -397,7 +389,7 @@ PROGRAM PSPEC
 		ENDDO
 	ENDDO
 	CALL FTCLOS(20,stat)
-	PRINT*, " Done."
+	IF (verbose >= 2) PRINT*, " Done."
 
 	! Deallocate output
 	DEALLOCATE(power_sub)
