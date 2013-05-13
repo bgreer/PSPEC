@@ -15,9 +15,13 @@ FITSLOC=/usr/local
 FITSLIB=$(FITSLOC)/lib
 FITSINC=$(FITSLOC)/include
 
-pspec : pspec.f90
-	$(COMPILER) -o pspec pspec.f90 -I$(FFTWINC) -L$(FFTWLIB) -lfftw3 -L$(FITSLIB) -lcfitsio
+LINK=-I$(FFTWINC) -L$(FFTWLIB) -lfftw3 -L$(FITSLIB) -lcfitsio
+
+pspec : pspec.f90 ParseInput.f90
+	$(COMPILER) -c ParseInput.f90 $(LINK)
+	$(COMPILER) pspec.f90 ParseInput.f90 -o pspec $(LINK)
+
 
 clean :
-	rm pspec
+	rm pspec *.mod
 
